@@ -22,13 +22,24 @@ from glide_text2im.tokenizer.simple_tokenizer import SimpleTokenizer
 
 # Sampling parameters
 prompt = "A woman's face"
-batch_size = 4
+batch_size = 12
 guidance_scale = 3.0
+timestep_base = '200'
+timestep_upscale = '100'
+
+if len(sys.argv) > 1:
+	prompt = sys.argv[1]
+	print(f"using prompt: '{prompt}'")
+if len(sys.argv) > 2:
+    try:
+        float_val = float(sys.argv[2])
+        guidance_scale = float_val
+    except Exception as e:
+        print(f"Could not derive (float) guidance scale from second parameter [{sys.argv[2]}]: {e}")
 
 # Tune this parameter to control the sharpness of 256x256 images.
 # A value of 1.0 is sharper, but sometimes results in grainy artifacts.
 upsample_temp = 0.997
-
 
 #########################################
 # This notebook supports both CPU and GPU.
@@ -49,7 +60,7 @@ xprompt = xprompt[:32]
 # Create base model.
 options = model_and_diffusion_defaults()
 options['use_fp16'] = has_cuda
-options['timestep_respacing'] = '100' # use 100 diffusion steps for fast sampling
+options['timestep_respacing'] = timestep_base
 model, diffusion = create_model_and_diffusion(**options)
 model.eval()
 if has_cuda:
@@ -61,7 +72,8 @@ print('total base parameters', sum(x.numel() for x in model.parameters()))
 # Create upsampler model.
 options_up = model_and_diffusion_defaults_upsampler()
 options_up['use_fp16'] = has_cuda
-options_up['timestep_respacing'] = 'fast27' # use 27 diffusion steps for very fast sampling
+# options_up['timestep_respacing'] = 'fast27' # use 27 diffusion steps for very fast sampling
+options_up['timestep_respacing'] = timestep_upscale
 model_up, diffusion_up = create_model_and_diffusion(**options_up)
 model_up.eval()
 if has_cuda:
