@@ -2,6 +2,7 @@ import math
 from PIL import Image
 import torch as th
 from datetime import datetime
+import torch.nn as nn
 import sys
 import os
 
@@ -9,36 +10,42 @@ import os
 OUTPATHBASE = "outputs/"
 os.makedirs(OUTPATHBASE, exist_ok=True)
 
+from glide_text2im.clip.model_creation import create_clip_model
 from glide_text2im.download import load_checkpoint
 from glide_text2im.model_creation import (
     create_model_and_diffusion,
     model_and_diffusion_defaults,
-    model_and_diffusion_defaults_upsampler
+    model_and_diffusion_defaults_upsampler,
 )
+from glide_text2im.tokenizer.simple_tokenizer import SimpleTokenizer
 
 # Sampling parameters
-prompt = "A nerdy rodent"
+# Default prompt
+prompt = "House on a hill"
+# Use CLIP guidance if enabled. If disabled, classifier-free guidance is used instead
+use_clip = True
+# Amount of images in batch. Higher values generate more images at once while using more RAM
 batch_size = 12
-guidance_scale = 3.0
+# Guidance scale of either CLIP or classifier-free guidance during generation
+guidance_scale = 2.5
+# Timesteps count for base and upscaler models. For quick generation, use '100', 'fast27'
 timestep_base = '200'
 timestep_upscale = '100'
+# Tune this parameter to control the sharpness of 256x256 images. A value of 1.0 is sharper, but sometimes results in grainy artifacts.
+upsample_temp = 0.997
 
 if len(sys.argv) > 1:
 	prompt = sys.argv[1]
 	print(f"using prompt: '{prompt}'")
-if len(sys.argv) > 2:
+if len(sys.argv) > 3:
     try:
-        float_val = float(sys.argv[2])
+        float_val = float(sys.argv[3])
         guidance_scale = float_val
     except Exception as e:
-        print(f"Could not derive (float) guidance scale from second parameter [{sys.argv[2]}]: {e}")
-
-# Tune this parameter to control the sharpness of 256x256 images.
-# A value of 1.0 is sharper, but sometimes results in grainy artifacts.
-upsample_temp = 0.997
+        print(f"Could not derive (float) guidance scale from second parameter [{sys.argv[3]}]: {e}")
 
 
-###############
+#########################################
 # This notebook supports both CPU and GPU.
 # On CPU, generating one sample may take on the order of 20 minutes.
 # On a GPU, it should be under a minute.
@@ -48,7 +55,8 @@ device = th.device('cpu' if not has_cuda else 'cuda')
 
 # Make a filename
 # xprompt = prompt.replace(" ", "_")[:] + "-gs_" + str(guidance_scale)
-xprompt = "".join([ char if char.isalnum() else "_" for char in prompt ]) + f"-CFgs{guidance_scale}-ut{upsample_temp}"
+xprompt = "".join([ char if char.isalnum() else "_" for char in prompt ])
+xprompt += f"-{'CL' if use_clip else 'CF'}gs{guidance_scale}-ut{upsample_temp}-{timestep_base}-{timestep_upscale}"
 # limit filename to something reasonable
 while "__" in xprompt:
     xprompt = xprompt.replace("__","_")
@@ -103,7 +111,7 @@ def image_autogrid(imgs):
         grid.paste(img, box=(i%cols*w, i//cols*h))
     return grid
 
-def save_images(batch: th.Tensor):
+def save_images(batch: th.Tensor, name_suffix=""):
     """ Save images """
     scaled = ((batch + 1)*127.5).round().clamp(0,255).to(th.uint8).cpu()
     reshaped = scaled.permute(2, 0, 3, 1).reshape([batch.shape[2], -1, 3])
@@ -117,7 +125,7 @@ def save_images(batch: th.Tensor):
         image_item = Image.fromarray(test_reshape.numpy())
         # image_item.save(f'{OUTPATHBASE}{stamp}-[{_}].png')
         pil_images.append(image_item)
-    image_autogrid(pil_images).save(f'{OUTPATHBASE}{stamp}-{xprompt}.png')
+    image_autogrid(pil_images).save(f'{OUTPATHBASE}{stamp}{name_suffix}-{xprompt}.png')
 
 
 ##############################
@@ -130,50 +138,66 @@ tokens, mask = model.tokenizer.padded_tokens_and_mask(
     tokens, options['text_ctx']
 )
 
-# Create the classifier-free guidance tokens (empty)
-full_batch_size = batch_size * 2
-uncond_tokens, uncond_mask = model.tokenizer.padded_tokens_and_mask(
-    [], options['text_ctx']
-)
-
-# Pack the tokens together into model kwargs.
-model_kwargs = dict(
-    tokens=th.tensor(
-        [tokens] * batch_size + [uncond_tokens] * batch_size, device=device
-    ),
-    mask=th.tensor(
+if use_clip:
+    # Create CLIP model.
+    clip_model = create_clip_model(device=device)
+    clip_model.image_encoder.load_state_dict(load_checkpoint('clip/image-enc', device))
+    clip_model.text_encoder.load_state_dict(load_checkpoint('clip/text-enc', device))
+    model_tokens = th.tensor([tokens] * batch_size, device=device)
+    model_mask = th.tensor([mask] * batch_size, dtype=th.bool, device=device)
+    # Setup guidance function for CLIP model.
+    cond_fn = clip_model.cond_fn([prompt] * batch_size, guidance_scale)
+    sample_loop_model = model
+    sample_loop_batch_size = batch_size
+else:
+    # Create a classifier-free guidance sampling function
+    def model_fn(x_t, ts, **kwargs):
+        half = x_t[: len(x_t) // 2]
+        combined = th.cat([half, half], dim=0)
+        model_out = model(combined, ts, **kwargs)
+        eps, rest = model_out[:, :3], model_out[:, 3:]
+        cond_eps, uncond_eps = th.split(eps, len(eps) // 2, dim=0)
+        half_eps = uncond_eps + guidance_scale * (cond_eps - uncond_eps)
+        eps = th.cat([half_eps, half_eps], dim=0)
+        return th.cat([eps, rest], dim=1)
+    # Create the classifier-free guidance tokens (empty)
+    full_batch_size = batch_size * 2
+    uncond_tokens, uncond_mask = model.tokenizer.padded_tokens_and_mask(
+        [], options['text_ctx']
+    )
+    model_tokens = th.tensor([tokens] * batch_size + [uncond_tokens] * batch_size, device=device)
+    model_mask = th.tensor(
         [mask] * batch_size + [uncond_mask] * batch_size,
         dtype=th.bool,
         device=device,
-    ),
-)
+    )
+    cond_fn = None
+    sample_loop_model = model_fn
+    sample_loop_batch_size = full_batch_size
 
-# Create a classifier-free guidance sampling function
-def model_fn(x_t, ts, **kwargs):
-    half = x_t[: len(x_t) // 2]
-    combined = th.cat([half, half], dim=0)
-    model_out = model(combined, ts, **kwargs)
-    eps, rest = model_out[:, :3], model_out[:, 3:]
-    cond_eps, uncond_eps = th.split(eps, len(eps) // 2, dim=0)
-    half_eps = uncond_eps + guidance_scale * (cond_eps - uncond_eps)
-    eps = th.cat([half_eps, half_eps], dim=0)
-    return th.cat([eps, rest], dim=1)
+# Pack the tokens together into model kwargs.
+model_kwargs = dict(
+    tokens=model_tokens,
+    mask=model_mask,
+)
 
 # Sample from the base model.
 model.del_cache()
 samples = diffusion.p_sample_loop(
-    model_fn,
-    (full_batch_size, 3, options["image_size"], options["image_size"]),
+    sample_loop_model,
+    (sample_loop_batch_size, 3, options["image_size"], options["image_size"]),
     device=device,
     clip_denoised=True,
     progress=True,
     model_kwargs=model_kwargs,
-    cond_fn=None,
-)[:batch_size]
+    cond_fn=cond_fn,
+)
+if not use_clip:
+    samples = samples[:batch_size]
 model.del_cache()
 
-# 64x64 samples = way too small to bother saving ;)
-#save_images(samples)
+# Tiny output - 64x64 - uncomment to save if you like!
+save_images(samples,"_64")
 
 ##############################
 # Upsample the 64x64 samples #
