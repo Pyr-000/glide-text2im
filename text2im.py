@@ -1,6 +1,13 @@
+import math
 from PIL import Image
 import torch as th
 from datetime import datetime
+import sys
+import os
+
+
+OUTPATHBASE = "outputs/"
+os.makedirs(OUTPATHBASE, exist_ok=True)
 
 from glide_text2im.download import load_checkpoint
 from glide_text2im.model_creation import (
@@ -28,7 +35,12 @@ has_cuda = th.cuda.is_available()
 device = th.device('cpu' if not has_cuda else 'cuda')
 
 # Make a filename
-xprompt = prompt.replace(" ", "_")[:] + "-gs_" + str(guidance_scale)
+# xprompt = prompt.replace(" ", "_")[:] + "-gs_" + str(guidance_scale)
+xprompt = "".join([ char if char.isalnum() else "_" for char in prompt ]) + f"-CFgs{guidance_scale}-ut{upsample_temp}"
+# limit filename to something reasonable
+while "__" in xprompt:
+    xprompt = xprompt.replace("__","_")
+xprompt = xprompt[:32]
 
 # Create base model.
 options = model_and_diffusion_defaults()
@@ -55,21 +67,45 @@ model_up.load_state_dict(load_checkpoint('upsample', device))
 print('total upsampler parameters', sum(x.numel() for x in model_up.parameters()))
 
 
+# function to create one image containing all input images in a grid.
+# currently not intended for images of differing sizes.
+def image_autogrid(imgs):
+    # additional image separation (pixels of padding), between grid items.
+    GRID_IMAGE_SEPARATION = 10
+    side_len = math.sqrt(len(imgs))
+    # round up cols from square root, attempt to round down rows
+    # if required to actually fit all images, both cols and rows are rounded up.
+    cols = math.ceil(side_len)
+    rows = math.floor(side_len)
+    if (rows*cols) < len(imgs):
+        rows = math.ceil(side_len)
+    # get grid item size from first image
+    w, h = imgs[0].size
+    # add separation to size between images as 'padding'
+    w += GRID_IMAGE_SEPARATION
+    h += GRID_IMAGE_SEPARATION
+    # remove one image separation size from the overall size (no added padding after the final row/col)
+    grid = Image.new('RGB', size=(cols*w-GRID_IMAGE_SEPARATION, rows*h-GRID_IMAGE_SEPARATION))
+    for i, img in enumerate(imgs):
+        grid.paste(img, box=(i%cols*w, i//cols*h))
+    return grid
+
 def save_images(batch: th.Tensor):
     """ Save images """
     scaled = ((batch + 1)*127.5).round().clamp(0,255).to(th.uint8).cpu()
     reshaped = scaled.permute(2, 0, 3, 1).reshape([batch.shape[2], -1, 3])
 
-    # Save strip
-    stamp = datetime.today().strftime('%H%M%S')
-    Image.fromarray(reshaped.numpy()).save(f'output-{stamp}.png')
-    
-    # Save individual    
+    stamp = datetime.today().strftime('%Y_%m_%d_%H%M%S')
+    pil_images = []
+    # Save individual
     for _ in range(0,batch.shape[0]):
         test_single = scaled.select(0,_)
         test_reshape = test_single.permute(1, 2, 0).reshape([batch.shape[2], -1, 3])
-        Image.fromarray(test_reshape.numpy()).save(f'{xprompt}-{_}-{stamp}.png')
-    
+        image_item = Image.fromarray(test_reshape.numpy())
+        # image_item.save(f'{OUTPATHBASE}{stamp}-[{_}].png')
+        pil_images.append(image_item)
+    image_autogrid(pil_images).save(f'{OUTPATHBASE}{stamp}-{xprompt}.png')
+
 
 ##############################
 # Sample from the base model #
