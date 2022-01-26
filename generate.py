@@ -5,10 +5,25 @@ from datetime import datetime
 import torch.nn as nn
 import sys
 import os
+import argparse
 
+parser = argparse.ArgumentParser(prog="GLIDE Text2Image", epilog="Text2Image generation using GLIDE, with classifier-free or CLIP guidance.")
+parser.add_argument("prompt", default="House on a hill")
+parser.add_argument("-s", default=12, type=int, help="Batch size: Higher values generate more images at once while using more RAM")
+parser.add_argument("-gs", default=3.0, type=float, help="Guidance scale parameter during generation (Higher values may improve quality, but reduce diversity)")
+parser.add_argument("-cf", action="store_true", help="Use classifier-free guidance instead of CLIP guidance. CF guidance may yield 'cleaner' images, while CLIP guidance may be better at interpreting more complex prompts.")
+parser.add_argument("-tb", default='200', help="Timestep value for base model. For faster generation, lower values (e.g. '100') can be used")
+parser.add_argument("-tu", default='100', help="Timestep value for upscaler. For faster generation, use 'fast27'")
+parser.add_argument("-ut", default=0.997, type= float, help="Temperature value for the upscaler. '1.0' will result in sharper, but potentially noisier/grainier images")
+parser.add_argument("-ss", action="store_true", help="Additionally save the small 64x64 images (before the upscaling step)")
+parser.add_argument("-ni", action="store_false", help="Don't save individual images (after the upscaling step)")
 
+args = parser.parse_args()
+print(args)
 OUTPATHBASE = "outputs/"
+OUTPATH_INDIVIDUAL = f"{OUTPATHBASE}individual_images/"
 os.makedirs(OUTPATHBASE, exist_ok=True)
+os.makedirs(OUTPATH_INDIVIDUAL, exist_ok=True)
 
 from glide_text2im.clip.model_creation import create_clip_model
 from glide_text2im.download import load_checkpoint
@@ -21,29 +36,25 @@ from glide_text2im.tokenizer.simple_tokenizer import SimpleTokenizer
 
 # Sampling parameters
 # Default prompt
-prompt = "House on a hill"
+prompt = args.prompt
 # Use CLIP guidance if enabled. If disabled, classifier-free guidance is used instead
-use_clip = True
+use_clip = not args.cf
 # Amount of images in batch. Higher values generate more images at once while using more RAM
-batch_size = 12
+batch_size = args.s
 # Guidance scale of either CLIP or classifier-free guidance during generation
-guidance_scale = 2.5
+guidance_scale = args.gs
 # Timesteps count for base and upscaler models. For quick generation, use '100', 'fast27'
-timestep_base = '200'
-timestep_upscale = '100'
+timestep_base = args.tb
+timestep_upscale = args.tu
 # Tune this parameter to control the sharpness of 256x256 images. A value of 1.0 is sharper, but sometimes results in grainy artifacts.
-upsample_temp = 0.997
+upsample_temp = args.ut
+# Also save direct model outputs before upscaling (64x64)
+save_small_images= args.ss
+# Also save the individual images 
+save_individual_images = args.ni
 
-if len(sys.argv) > 1:
-	prompt = sys.argv[1]
-	print(f"using prompt: '{prompt}'")
-if len(sys.argv) > 3:
-    try:
-        float_val = float(sys.argv[3])
-        guidance_scale = float_val
-    except Exception as e:
-        print(f"Could not derive (float) guidance scale from second parameter [{sys.argv[3]}]: {e}")
-
+# additional image separation (pixels of padding), between grid items.
+GRID_IMAGE_SEPARATION = 10
 
 #########################################
 # This notebook supports both CPU and GPU.
@@ -56,11 +67,11 @@ device = th.device('cpu' if not has_cuda else 'cuda')
 # Make a filename
 # xprompt = prompt.replace(" ", "_")[:] + "-gs_" + str(guidance_scale)
 xprompt = "".join([ char if char.isalnum() else "_" for char in prompt ])
-xprompt += f"-{'CL' if use_clip else 'CF'}gs{guidance_scale}-ut{upsample_temp}-{timestep_base}-{timestep_upscale}"
 # limit filename to something reasonable
 while "__" in xprompt:
     xprompt = xprompt.replace("__","_")
 xprompt = xprompt[:32]
+xprompt += f"-{'CL' if use_clip else 'CF'}gs{guidance_scale:.2f}-ut{upsample_temp:.3f}-{timestep_base}-{timestep_upscale}"
 
 # Create base model.
 options = model_and_diffusion_defaults()
@@ -91,8 +102,6 @@ print('total upsampler parameters', sum(x.numel() for x in model_up.parameters()
 # function to create one image containing all input images in a grid.
 # currently not intended for images of differing sizes.
 def image_autogrid(imgs):
-    # additional image separation (pixels of padding), between grid items.
-    GRID_IMAGE_SEPARATION = 10
     side_len = math.sqrt(len(imgs))
     # round up cols from square root, attempt to round down rows
     # if required to actually fit all images, both cols and rows are rounded up.
@@ -123,7 +132,8 @@ def save_images(batch: th.Tensor, name_suffix=""):
         test_single = scaled.select(0,_)
         test_reshape = test_single.permute(1, 2, 0).reshape([batch.shape[2], -1, 3])
         image_item = Image.fromarray(test_reshape.numpy())
-        # image_item.save(f'{OUTPATHBASE}{stamp}-[{_}].png')
+        if save_individual_images:
+            image_item.save(f'{OUTPATH_INDIVIDUAL}{stamp}-[{_}].png')
         pil_images.append(image_item)
     image_autogrid(pil_images).save(f'{OUTPATHBASE}{stamp}{name_suffix}-{xprompt}.png')
 
@@ -197,7 +207,8 @@ if not use_clip:
 model.del_cache()
 
 # Tiny output - 64x64 - uncomment to save if you like!
-save_images(samples,"_64")
+if save_small_images:
+	save_images(samples,"_64")
 
 ##############################
 # Upsample the 64x64 samples #
