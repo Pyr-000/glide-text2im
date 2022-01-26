@@ -40,6 +40,8 @@ To use the generation script, simply run it with a text prompt as an an addition
 ```
 python generate.py "Painting of an apple"
 ```
+Example output under the given prompt:
+<img src="./examples/Painting_of_an_apple-CLgs3.00-ut0.997-200-100.png" alt='grid of images of "painting of an apple"' width="66%" height=66%/>
 
 Parameters for configuring the generation script can be viewed with the `-h` flag:
 ```
