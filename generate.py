@@ -1,5 +1,6 @@
 import math
 from PIL import Image
+from PIL.PngImagePlugin import PngInfo
 import torch as th
 from datetime import datetime
 import torch.nn as nn
@@ -98,6 +99,10 @@ model_up.to(device)
 model_up.load_state_dict(load_checkpoint('upsample', device))
 print('total upsampler parameters', sum(x.numel() for x in model_up.parameters()))
 
+def tokens_string(tokens, tokenizer):
+    token_decoder_dict = tokenizer.decoder
+    token_strings = [token_decoder_dict[t] for t in tokens]
+    return token_strings
 
 # function to create one image containing all input images in a grid.
 # currently not intended for images of differing sizes.
@@ -135,7 +140,11 @@ def save_images(batch: th.Tensor, name_suffix=""):
         if save_individual_images:
             image_item.save(f'{OUTPATH_INDIVIDUAL}{stamp}-[{_}].png')
         pil_images.append(image_item)
-    image_autogrid(pil_images).save(f'{OUTPATHBASE}{stamp}{name_suffix}-{xprompt}.png')
+    image_path = f'{OUTPATHBASE}{stamp}{name_suffix}-{xprompt}.png'
+    metadata = PngInfo()
+    for k in args.__dict__:
+        metadata.add_text(key=k, value=repr(args.__dict__[k]))
+    image_autogrid(pil_images).save(image_path, pnginfo=metadata)
 
 
 ##############################
@@ -147,6 +156,8 @@ tokens = model.tokenizer.encode(prompt)
 tokens, mask = model.tokenizer.padded_tokens_and_mask(
     tokens, options['text_ctx']
 )
+tokenized_prompt = [t for i,t in enumerate(tokens_string(tokens, model.tokenizer)) if mask[i]]
+print(f"Tokenized String ({len(tokenized_prompt)}/{len(tokens)}):\n{tokenized_prompt}")
 
 if use_clip:
     # Create CLIP model.
