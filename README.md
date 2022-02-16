@@ -36,32 +36,37 @@ The local versions of the notebooks are as close as possible to the original not
 
 Additionally, a more commandline-friendly generation script, ``generate.py``, is available. It can be set to use either classifier-free guidance, or CLIP guidance.
 
-To use the generation script, simply run it with a text prompt as an an additional commandline parameter:
+To use the generation script, simply run it with a text prompt as an additional commandline parameter:
 ```
 python generate.py "Painting of an apple"
 ```
 Example output under the given prompt:
 <img src="./examples/Painting_of_an_apple-CLgs3.00-ut0.997-200-100.png" alt='grid of images of "painting of an apple"' width="66%" height=66%/>
 
+Multiple prompts can be specified, separated via "||". Individual batch items will cycle through the prompts in order. This can be used to evaluate multiple variations of a prompt in the same batch.
+
 Parameters for configuring the generation script can be viewed with the `-h` flag:
 ```
 > python generate.py -h
-usage: GLIDE Text2Image [-h] [-s S] [-gs GS] [-cf] [-tb TB] [-tu TU] [-ut UT] [-ss] [-ni] prompt
+usage: GLIDE Text2Image [-h] [-s S] [-gs GS] [-cf] [-tb TB] [-tu TU] [-ut UT] [-ss] [-ni] [-v] [-rc RC] [prompt]
 
 positional arguments:
-  prompt
+  prompt      Prompt for image generation. Batch items cycles through multiple prompts separated by ||
 
 optional arguments:
   -h, --help  show this help message and exit
   -s S        Batch size: Higher values generate more images at once while using more RAM
   -gs GS      Guidance scale parameter during generation (Higher values may improve quality, but reduce diversity)
-  -cf         Use classifier-free guidance instead of CLIP guidance. CF guidance may yield 'cleaner' images, while CLIP
-              guidance may be better at interpreting more complex prompts.
+  -cf         Use classifier-free guidance instead of CLIP guidance. CF guidance may yield 'cleaner' images, while
+              CLIP guidance may be better at interpreting more complex prompts.
   -tb TB      Timestep value for base model. For faster generation, lower values (e.g. '100') can be used
   -tu TU      Timestep value for upscaler. For faster generation, use 'fast27'
-  -ut UT      Temperature value for the upscaler. '1.0' will result in sharper, but potentially noisier/grainier images
+  -ut UT      Temperature value for the upscaler. '1.0' will result in sharper, but potentially noisier/grainier
+              images
   -ss         Additionally save the small 64x64 images (before the upscaling step)
   -ni         Don't save individual images (after the upscaling step)
+  -v          Verbose mode: print additional runtime information
+  -rc RC      Amount of different random prompts to use when no prompt is given
 
 Text2Image generation using GLIDE, with classifier-free or CLIP guidance.
 ```
